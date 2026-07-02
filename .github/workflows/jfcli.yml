@@ -1,0 +1,70 @@
+name: "JFCLI: DotNet & NuGet"
+on: push
+permissions:
+  actions: read # for detecting the Github Actions environment.
+  id-token: write # for creating OIDC tokens for signing.
+  packages: write # for uploading attestations.
+  contents: read
+  security-events: write # Required for uploading code scanning.
+  attestations: write
+env:
+  JF_RT_URL: "https://${{vars.JF_NAME}}.jfrog.io"
+  BUILD_NAME: "aspgoat" 
+  JOB_SUMMARY: false
+  JFROG_CLI_LOG_LEVEL: DEBUG # DEBUG, INFO, WARN, ERROR
+  JAVA_DISTRIBUTION: 'temurin'
+  JAVA_VERSION: '25'
+  DEFAULT_WORKSPACE: "${{github.workspace}}"  # /home/runner/work/spring-petclinic/spring-petclinic
+  REPO_VIRTUAL: "aspgoat-virtual"  # aspgoat-remote  aspgoat-init-local aspgoat-dev-local
+jobs:
+    nugetPackage:
+        runs-on: ubuntu-latest
+        env:  
+          BUILD_ID: "nuget-${{github.run_number}}"
+          REPO_VIRTUAL: "aspgoat-virtual"  # aspgoat-remote  aspgoat-init-local aspgoat-dev-local
+        defaults:
+            run:
+                working-directory: "${{github.workspace}}"
+        steps:
+            # Use the specific setup-cli branch. Ref https://github.com/marketplace/actions/setup-jfrog-cli
+            - name: "Setup JFrog CLI"
+              uses: jfrog/setup-jfrog-cli@v4
+              id: setup-cli
+              env:
+                JF_URL: ${{env.JF_RT_URL}}
+                JFROG_CLI_LOG_LEVEL: ${{env.JFROG_CLI_LOG_LEVEL}}
+                JF_GIT_TOKEN: ${{secrets.GITHUB_TOKEN}}      
+              with:
+                version: latest  #2.71.0
+                oidc-provider-name: ${{vars.JF_OIDC_PROVIDER_NAME}}
+                disable-job-summary: ${{env.JOB_SUMMARY}}
+
+            - name: "Clone VCS"
+              uses: actions/checkout@v7 # ref: https://github.com/actions/checkout
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v5
+              with:
+                dotnet-version: 8.0.x
+
+            - name: "JF Config"
+              run: |
+                  jf nuget-config --repo-resolve=${{env.REPO_VIRTUAL}}
+
+            - name: "Curation-Audit"
+              run: |
+                  jf ca --format=table --threads=100
+
+            - name: "Publish Package"
+              run: |
+                  jf nuget restore --build-name="${BUILD_NAME}" --build-number="${BUILD_ID}"
+                  jf nuget publish -c Release -o "${PUBLISH_DIR}" --no-restore --build-name="${BUILD_NAME}" --build-number="${BUILD_ID}"
+                  jf nuget push ${PUBLISH_DIR}/*.nupkg --build-name="${BUILD_NAME}" --build-number="${BUILD_ID}"
+                  jf rt upload "${PUBLISH_DIR}/*" "${REPO_LOCAL}/${BUILD_NAME}/${BUILD_ID}/" --flat=false --fail-no-op --build-name="${BUILD_NAME}" --build-number="${BUILD_ID}" --module=AspGoat
+
+            - name: "Build-Info"
+              run: |
+                  jf rt bce ${BUILD_NAME} ${BUILD_ID}
+                  jf rt bag ${BUILD_NAME} ${BUILD_ID}
+                  jf rt bp ${BUILD_NAME} ${BUILD_ID} --detailed-summary=true
+
